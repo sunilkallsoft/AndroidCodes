@@ -1,1 +1,213 @@
 
+Here’s how you can implement an alarm-like notifier in Java for an Android app. This solution ensures the notification is snoozed every 5 minutes until the user interacts with it (clicks or dismisses):
+
+---
+
+### 1. **Set up Firebase Notifications**
+Ensure Firebase Cloud Messaging (FCM) is integrated into your app. Refer to the [Firebase setup guide](https://firebase.google.com/docs/cloud-messaging/android/client).
+
+---
+
+### 2. **Receive FCM Messages**
+Use a `FirebaseMessagingService` to handle incoming FCM messages.
+
+```java
+public class MyFirebaseMessagingService extends FirebaseMessagingService {
+    @Override
+    public void onMessageReceived(@NonNull RemoteMessage remoteMessage) {
+        if (remoteMessage.getNotification() != null) {
+            showNotification(remoteMessage.getNotification().getTitle(), remoteMessage.getNotification().getBody());
+        }
+    }
+
+    private void showNotification(String title, String message) {
+        int notificationId = (int) System.currentTimeMillis();
+
+        // Create Dismiss Intent
+        Intent dismissIntent = new Intent(this, NotificationDismissReceiver.class);
+        dismissIntent.setAction("DISMISS");
+        dismissIntent.putExtra("NOTIFICATION_ID", notificationId);
+        PendingIntent dismissPendingIntent = PendingIntent.getBroadcast(
+                this,
+                notificationId,
+                dismissIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT
+        );
+
+        // Create Notification
+        NotificationCompat.Builder builder = new NotificationCompat.Builder(this, "default_channel")
+                .setContentTitle(title)
+                .setContentText(message)
+                .setSmallIcon(R.drawable.ic_notification)
+                .setAutoCancel(true)
+                .addAction(R.drawable.ic_dismiss, "Dismiss", dismissPendingIntent);
+
+        NotificationManagerCompat notificationManager = NotificationManagerCompat.from(this);
+        notificationManager.notify(notificationId, builder.build());
+
+        scheduleSnooze(notificationId, title, message);
+    }
+
+    private void scheduleSnooze(int notificationId, String title, String message) {
+        Data inputData = new Data.Builder()
+                .putInt("NOTIFICATION_ID", notificationId)
+                .putString("TITLE", title)
+                .putString("MESSAGE", message)
+                .build();
+
+        OneTimeWorkRequest workRequest = new OneTimeWorkRequest.Builder(SnoozeWorker.class)
+                .setInitialDelay(5, TimeUnit.MINUTES)
+                .setInputData(inputData)
+                .build();
+
+        WorkManager.getInstance(this).enqueue(workRequest);
+    }
+}
+```
+
+---
+
+### 3. **Implement the Snooze Worker**
+Create a `Worker` class for rescheduling notifications.
+
+```java
+public class SnoozeWorker extends Worker {
+
+    public SnoozeWorker(@NonNull Context context, @NonNull WorkerParameters workerParams) {
+        super(context, workerParams);
+    }
+
+    @NonNull
+    @Override
+    public Result doWork() {
+        Context context = getApplicationContext();
+        int notificationId = getInputData().getInt("NOTIFICATION_ID", -1);
+        String title = getInputData().getString("TITLE");
+        String message = getInputData().getString("MESSAGE");
+
+        if (notificationId != -1) {
+            NotificationManager notificationManager =
+                    (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
+
+            // Check if the notification is still active
+            if (isNotificationActive(notificationManager, notificationId)) {
+                // Re-issue the notification
+                NotificationCompat.Builder builder = new NotificationCompat.Builder(context, "default_channel")
+                        .setContentTitle(title)
+                        .setContentText(message)
+                        .setSmallIcon(R.drawable.ic_notification)
+                        .setAutoCancel(true);
+
+                NotificationManagerCompat.from(context).notify(notificationId, builder.build());
+
+                // Reschedule snooze
+                scheduleSnooze(notificationId, title, message);
+            }
+        }
+        return Result.success();
+    }
+
+    private boolean isNotificationActive(NotificationManager notificationManager, int notificationId) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            for (StatusBarNotification sbn : notificationManager.getActiveNotifications()) {
+                if (sbn.getId() == notificationId) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private void scheduleSnooze(int notificationId, String title, String message) {
+        Data inputData = new Data.Builder()
+                .putInt("NOTIFICATION_ID", notificationId)
+                .putString("TITLE", title)
+                .putString("MESSAGE", message)
+                .build();
+
+        OneTimeWorkRequest workRequest = new OneTimeWorkRequest.Builder(SnoozeWorker.class)
+                .setInitialDelay(5, TimeUnit.MINUTES)
+                .setInputData(inputData)
+                .build();
+
+        WorkManager.getInstance(getApplicationContext()).enqueue(workRequest);
+    }
+}
+```
+
+---
+
+### 4. **Handle Notification Dismissal**
+Use a `BroadcastReceiver` to listen for notification dismissal actions.
+
+```java
+public class NotificationDismissReceiver extends BroadcastReceiver {
+    @Override
+    public void onReceive(Context context, Intent intent) {
+        if ("DISMISS".equals(intent.getAction())) {
+            int notificationId = intent.getIntExtra("NOTIFICATION_ID", -1);
+            if (notificationId != -1) {
+                NotificationManager notificationManager =
+                        (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
+                notificationManager.cancel(notificationId);
+            }
+        }
+    }
+}
+```
+
+---
+
+### 5. **Set Up Notification Channel**
+Create a notification channel for Android 8.0+.
+
+```java
+public class App extends Application {
+    @Override
+    public void onCreate() {
+        super.onCreate();
+        createNotificationChannel();
+    }
+
+    private void createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationChannel channel = new NotificationChannel(
+                    "default_channel",
+                    "Default Channel",
+                    NotificationManager.IMPORTANCE_HIGH
+            );
+            NotificationManager manager = getSystemService(NotificationManager.class);
+            if (manager != null) {
+                manager.createNotificationChannel(channel);
+            }
+        }
+    }
+}
+```
+
+---
+
+### 6. **Register Components in Manifest**
+Update your `AndroidManifest.xml` to include the components.
+
+```xml
+<service
+    android:name=".MyFirebaseMessagingService"
+    android:exported="true">
+    <intent-filter>
+        <action android:name="com.google.firebase.MESSAGING_EVENT" />
+    </intent-filter>
+</service>
+
+<receiver android:name=".NotificationDismissReceiver" />
+```
+
+---
+
+### Summary
+1. **FCM Integration**: Use `FirebaseMessagingService` to trigger the notification.
+2. **Snooze Logic**: Use `WorkManager` for repeated snooze actions.
+3. **Dismiss Action**: Use a `BroadcastReceiver` to handle dismissals.
+4. **Notification Channel**: Ensure proper channel setup for Android 8.0+.
+
+This Java implementation will ensure a notification snoozes every 5 minutes until interacted with.
