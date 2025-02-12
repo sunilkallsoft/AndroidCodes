@@ -1,0 +1,89 @@
+Yes, this implementation works even when the app is closed, as long as:
+
+1. **Firebase Notification Delivery**:  
+   Firebase Cloud Messaging (FCM) can deliver messages to the device even if the app is not running, as long as the device has an active internet connection.
+
+2. **WorkManager for Snooze**:  
+   `WorkManager` schedules tasks that persist across app restarts and device reboots (depending on configuration). This makes it suitable for handling background work like rescheduling notifications.
+
+3. **Components Registered in Manifest**:  
+   Services (`FirebaseMessagingService`) and BroadcastReceivers are registered in the manifest, so the system can invoke them even if the app isn't running.
+
+However, there are some nuances to ensure it works reliably:
+
+---
+
+### 1. **Types of FCM Messages**
+- **Notification Message (default FCM notification)**:  
+  If FCM delivers only a notification payload (without a data payload), it directly shows the notification without invoking your `FirebaseMessagingService` if the app is in the background or not running. To trigger custom logic, include a **data payload** in your FCM message.
+
+  Example FCM payload:
+  ```json
+  {
+    "to": "DEVICE_TOKEN",
+    "data": {
+      "title": "Reminder",
+      "body": "This is your snooze notification."
+    }
+  }
+  ```
+
+  Use the `data` field to ensure `FirebaseMessagingService` processes the message.
+
+---
+
+### 2. **WorkManager with Constraints**
+For `WorkManager` tasks to run even when the app is closed:
+- Avoid constraints that might delay execution.
+- Use the `setInitialDelay` method to schedule snooze precisely.
+
+```java
+OneTimeWorkRequest workRequest = new OneTimeWorkRequest.Builder(SnoozeWorker.class)
+        .setInitialDelay(5, TimeUnit.MINUTES)
+        .build();
+
+WorkManager.getInstance(context).enqueue(workRequest);
+```
+
+---
+
+### 3. **Android Versions and Restrictions**
+Android introduces restrictions on background processes with each release. Here's how to handle them:
+
+#### a. **Android 8.0 (Oreo) and Later**
+- Background services are restricted. `FirebaseMessagingService` runs in the foreground when delivering messages.
+- Use `WorkManager` for deferred or periodic tasks like rescheduling snooze notifications.
+
+#### b. **Android 12 and Foreground Service Restrictions**
+If you need to trigger notifications immediately, ensure `FirebaseMessagingService` is running, as it operates in the foreground during message delivery.
+
+---
+
+### 4. **When the App is Fully Closed (Swiped Away)**
+- `FirebaseMessagingService` will still trigger on receiving an FCM message with a data payload.
+- `WorkManager` continues its execution for scheduled tasks, as it operates independently of the app's lifecycle.
+
+---
+
+### 5. **Edge Cases**
+Some device manufacturers (e.g., Xiaomi, Oppo, Vivo) aggressively kill background processes or restrict notifications. To handle these:
+- **Request Battery Optimizations Exemption**:  
+  Prompt the user to whitelist your app in battery optimization settings if necessary.
+
+  ```java
+  Intent intent = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
+  intent.setData(Uri.parse("package:" + context.getPackageName()));
+  context.startActivity(intent);
+  ```
+
+- Test on devices with different Android versions and manufacturer-specific customizations.
+
+---
+
+### Conclusion
+This implementation will work when the app is closed, provided:
+1. You use a **data payload** in FCM messages to trigger `FirebaseMessagingService`.
+2. `WorkManager` is used for snooze rescheduling.
+3. The app is not restricted by aggressive device-specific optimizations.
+
+For critical notifications, test extensively across devices to ensure reliability.
